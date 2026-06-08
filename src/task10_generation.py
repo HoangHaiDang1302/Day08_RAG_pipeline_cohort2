@@ -1,201 +1,220 @@
 """
-Task 10 — Generation Có Citation.
+Task 10 - Generation with citations.
 
-Hướng dẫn:
-    1. Chọn top_k, top_p phù hợp (giải thích lý do)
-    2. Sắp xếp lại chunks sau reranking để tránh "lost in the middle"
-    3. Inject context vào prompt
-    4. Yêu cầu LLM trả lời có citation
-    5. Nếu không đủ evidence → "I cannot verify this information"
+This local implementation does not require an LLM API key. It retrieves context,
+reorders chunks to reduce "lost in the middle", formats source labels, and
+builds a grounded Vietnamese answer with citations from the retrieved chunks.
+
+When an OpenAI/Gemini key is available, the answer-construction part can be
+replaced with an LLM call while keeping reorder_for_llm() and format_context().
 """
 
+from __future__ import annotations
+
 import os
-from dotenv import load_dotenv
+import re
 
-load_dotenv()
+from src.task9_retrieval_pipeline import retrieve
 
-from .task9_retrieval_pipeline import retrieve
+try:
+    from dotenv import load_dotenv
 
+    load_dotenv()
+except Exception:
+    pass
 
-# =============================================================================
-# CONFIGURATION — Giải thích lựa chọn
-# =============================================================================
-
-# top_k: Số chunks đưa vào context
-# Chọn 5 vì: đủ evidence mà không quá dài gây lost in the middle
+# top_k=5 gives enough evidence without making the prompt too long.
 TOP_K = 5
 
-# top_p (nucleus sampling): Xác suất tích luỹ cho token generation
-# Chọn 0.9 vì: đủ diverse nhưng không quá random
+# top_p=0.9 would be used for API generation: diverse but still controlled.
 TOP_P = 0.9
 
-# temperature: Độ ngẫu nhiên của output
-# Chọn 0.3 vì: RAG cần factual, ít sáng tạo
+# temperature=0.3 is appropriate for factual RAG because it reduces randomness.
 TEMPERATURE = 0.3
 
+SYSTEM_PROMPT = """Answer the following question in Vietnamese.
+Use only the provided context.
+Every factual claim must include a source citation.
+If the context is insufficient, say: I cannot verify this information."""
 
-# =============================================================================
-# SYSTEM PROMPT
-# =============================================================================
+DEFAULT_LLM_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
 
-SYSTEM_PROMPT = """Answer the following question comprehensively in Vietnamese.
-For every statement of fact or claim, immediately insert a citation in brackets
-linking to the specific source (e.g., [Luật Phòng chống ma tuý 2021, Điều 3]
-or [VnExpress, 2024]).
-
-If the information is not explicitly stated in the provided context or knowledge
-base, state 'Tôi không thể xác minh thông tin này từ nguồn hiện có' rather than
-guessing.
-
-Rules:
-- Only use information from the provided context
-- Every factual claim MUST have a citation
-- If context is insufficient, say so clearly
-- Structure your answer with clear paragraphs"""
-
-
-# =============================================================================
-# DOCUMENT REORDERING (tránh lost in the middle)
-# =============================================================================
 
 def reorder_for_llm(chunks: list[dict]) -> list[dict]:
     """
-    Sắp xếp chunks để tránh "lost in the middle" effect.
+    Reorder chunks to reduce "lost in the middle".
 
-    LLM nhớ tốt thông tin ở ĐẦU và CUỐI prompt, quên thông tin ở GIỮA.
-    Strategy: đặt chunks quan trọng nhất ở đầu và cuối, kém quan trọng ở giữa.
+    Input sorted by score: [1, 2, 3, 4, 5]
+    Output pattern:        [1, 3, 5, 4, 2]
 
-    Input order (by score):  [1, 2, 3, 4, 5]
-    Output order:            [1, 3, 5, 4, 2]
-    (best first, worst in middle, second-best last)
-
-    Args:
-        chunks: List sorted by score descending (from retrieval)
-
-    Returns:
-        List reordered để maximize LLM attention.
+    The best chunk stays first, the second-best is moved near the end, and lower
+    confidence chunks stay closer to the middle.
     """
-    # TODO: Implement reordering
-    #
-    # if len(chunks) <= 2:
-    #     return chunks
-    #
-    # # Split into first half (important → đầu) and second half (important → cuối)
-    # reordered = []
-    # for i in range(0, len(chunks), 2):
-    #     reordered.append(chunks[i])  # Odd positions go first
-    # for i in range(len(chunks) - 1 - (len(chunks) % 2 == 0), 0, -2):
-    #     reordered.append(chunks[i])  # Even positions go last (reversed)
-    #
-    # return reordered
-    raise NotImplementedError("Implement reorder_for_llm")
+    if len(chunks) <= 2:
+        return chunks
+
+    front = chunks[0::2]
+    back = list(reversed(chunks[1::2]))
+    return front + back
 
 
-# =============================================================================
-# CONTEXT FORMATTING
-# =============================================================================
+def _source_label(chunk: dict, index: int) -> str:
+    metadata = chunk.get("metadata", {}) or {}
+    source = (
+        metadata.get("source")
+        or metadata.get("filename")
+        or metadata.get("path")
+        or f"Source {index}"
+    )
+    return str(source)
+
 
 def format_context(chunks: list[dict]) -> str:
     """
-    Format chunks thành context string cho prompt.
-    Mỗi chunk có label source để LLM có thể cite.
-
-    Args:
-        chunks: List of {'content': str, 'metadata': dict, 'score': float}
-
-    Returns:
-        Formatted context string.
+    Format chunks into a context string with source labels for citation.
     """
-    # TODO: Implement context formatting
-    #
-    # context_parts = []
-    # for i, chunk in enumerate(chunks, 1):
-    #     source = chunk.get("metadata", {}).get("source", f"Source {i}")
-    #     doc_type = chunk.get("metadata", {}).get("type", "unknown")
-    #     context_parts.append(
-    #         f"[Document {i} | Source: {source} | Type: {doc_type}]\n"
-    #         f"{chunk['content']}\n"
-    #     )
-    # return "\n---\n".join(context_parts)
-    raise NotImplementedError("Implement format_context")
+    context_parts = []
+    for index, chunk in enumerate(chunks, 1):
+        metadata = chunk.get("metadata", {}) or {}
+        source = _source_label(chunk, index)
+        doc_type = metadata.get("type", "unknown")
+        score = float(chunk.get("score", 0.0) or 0.0)
+        context_parts.append(
+            f"[Document {index} | Source: {source} | Type: {doc_type} | Score: {score:.3f}]\n"
+            f"{chunk.get('content', '').strip()}"
+        )
+    return "\n\n---\n\n".join(context_parts)
 
 
-# =============================================================================
-# GENERATION
-# =============================================================================
+def _sentences(text: str) -> list[str]:
+    parts = re.split(r"(?<=[.!?。])\s+|\n+", text.strip())
+    return [part.strip() for part in parts if len(part.strip()) > 40]
 
-def generate_with_citation(query: str, top_k: int = TOP_K) -> dict:
+
+def _build_local_answer(query: str, chunks: list[dict]) -> str:
+    if not chunks:
+        return "I cannot verify this information"
+
+    answer_lines = [
+        f"Dựa trên các nguồn đã truy xuất, câu hỏi '{query}' có thể được trả lời như sau:"
+    ]
+
+    used = 0
+    for index, chunk in enumerate(chunks, 1):
+        source = _source_label(chunk, index)
+        sentence_pool = _sentences(chunk.get("content", ""))
+        if not sentence_pool:
+            continue
+        sentence = sentence_pool[0]
+        if len(sentence) > 320:
+            sentence = sentence[:317].rstrip() + "..."
+        answer_lines.append(f"- {sentence} [{source}]")
+        used += 1
+        if used >= 3:
+            break
+
+    if used == 0:
+        return "I cannot verify this information"
+
+    answer_lines.append(
+        "Các nhận định trên chỉ dựa trên những đoạn context được truy xuất; "
+        "những thông tin không xuất hiện trong context cần được kiểm chứng thêm. "
+        "[retrieval_context]"
+    )
+    return "\n".join(answer_lines)
+
+
+def _generate_with_openai(query: str, context: str) -> tuple[str | None, str | None]:
     """
-    End-to-end RAG generation có citation.
+    Call an LLM for true abstractive generation when OPENAI_API_KEY is available.
 
-    Pipeline:
-        1. Retrieve relevant chunks
-        2. Reorder để tránh lost in the middle
-        3. Format context với source labels
-        4. Build prompt (system + context + query)
-        5. Call LLM
-        6. Return answer + sources
+    Returns (answer, error). Answer is None when SDK/key/network/quota is
+    unavailable so callers can use the local extractive fallback.
+    """
+    api_key = os.getenv("OPENAI_API_KEY")
+    if not api_key:
+        return None, "OPENAI_API_KEY is missing"
 
-    Args:
-        query: Câu hỏi của user
+    try:
+        from openai import OpenAI
+    except Exception as exc:
+        return None, f"OpenAI SDK unavailable: {type(exc).__name__}: {exc}"
+
+    user_prompt = f"""Context:
+{context}
+
+---
+
+Question: {query}
+
+Please answer in Vietnamese. Cite every factual claim using the Source labels
+shown in the context, for example [luat-phong-chong-ma-tuy-2021.md]. If the
+context does not contain enough evidence, say: I cannot verify this information."""
+
+    try:
+        client = OpenAI(api_key=api_key)
+        response = client.chat.completions.create(
+            model=DEFAULT_LLM_MODEL,
+            messages=[
+                {"role": "system", "content": SYSTEM_PROMPT},
+                {"role": "user", "content": user_prompt},
+            ],
+            temperature=TEMPERATURE,
+            top_p=TOP_P,
+        )
+    except Exception as exc:
+        return None, f"{type(exc).__name__}: {exc}"
+
+    return response.choices[0].message.content or None, None
+
+
+def generate_with_citation(query: str, top_k: int = TOP_K, use_llm: bool | None = None) -> dict:
+    """
+    End-to-end RAG generation with citation.
 
     Returns:
         {
-            'answer': str,           # Câu trả lời có citation
-            'sources': list[dict],   # Các chunks đã dùng
-            'retrieval_source': str  # 'hybrid' hoặc 'pageindex'
+            'answer': str,
+            'sources': list[dict],
+            'retrieval_source': str
         }
     """
-    # TODO: Implement generation pipeline
-    #
-    # # Step 1: Retrieve
-    # chunks = retrieve(query, top_k=top_k)
-    #
-    # # Step 2: Reorder
-    # reordered = reorder_for_llm(chunks)
-    #
-    # # Step 3: Format context
-    # context = format_context(reordered)
-    #
-    # # Step 4: Build prompt
-    # user_message = f"""Context:\n{context}\n\n---\n\nQuestion: {query}"""
-    #
-    # # Step 5: Call LLM
-    # from openai import OpenAI
-    # client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
-    #
-    # response = client.chat.completions.create(
-    #     model="gpt-4o-mini",
-    #     messages=[
-    #         {"role": "system", "content": SYSTEM_PROMPT},
-    #         {"role": "user", "content": user_message}
-    #     ],
-    #     temperature=TEMPERATURE,
-    #     top_p=TOP_P,
-    # )
-    #
-    # answer = response.choices[0].message.content
-    #
-    # # Step 6: Return
-    # return {
-    #     "answer": answer,
-    #     "sources": chunks,
-    #     "retrieval_source": chunks[0].get("source", "hybrid") if chunks else "none"
-    # }
-    raise NotImplementedError("Implement generate_with_citation")
+    if use_llm is None:
+        use_llm = os.getenv("ENABLE_LLM_GENERATION", "").lower() in {"1", "true", "yes"}
+
+    chunks = retrieve(query, top_k=top_k)
+    reordered = reorder_for_llm(chunks)
+    context = format_context(reordered)
+    llm_answer, llm_error = _generate_with_openai(query, context) if use_llm else (None, None)
+    answer = llm_answer or _build_local_answer(query, reordered)
+
+    return {
+        "answer": answer,
+        "sources": reordered,
+        "retrieval_source": chunks[0].get("source", "none") if chunks else "none",
+        "context": context,
+        "generation_config": {
+            "top_k": top_k,
+            "top_p": TOP_P,
+            "temperature": TEMPERATURE,
+            "mode": "openai_chat_completion" if llm_answer else "local_extractive_fallback",
+            "model": DEFAULT_LLM_MODEL if llm_answer else None,
+            "llm_error": llm_error,
+        },
+    }
 
 
 if __name__ == "__main__":
-    test_queries = [
-        "Hình phạt cho tội tàng trữ trái phép chất ma tuý theo pháp luật Việt Nam?",
-        "Những nghệ sĩ nào đã bị bắt vì liên quan tới ma tuý?",
-        "Quy trình cai nghiện bắt buộc theo Luật Phòng chống ma tuý 2021?",
+    questions = [
+        "Hinh phat cho toi tang tru trai phep chat ma tuy theo phap luat Viet Nam?",
+        "Nhung nghe si nao da bi bat vi lien quan toi ma tuy?",
+        "Quy trinh cai nghien bat buoc theo Luat Phong chong ma tuy 2021?",
     ]
 
-    for q in test_queries:
-        print(f"\n{'='*70}")
-        print(f"Q: {q}")
+    for question in questions:
+        print(f"\n{'=' * 70}")
+        print(f"Q: {question}")
         print("=" * 70)
-        result = generate_with_citation(q)
+        result = generate_with_citation(question)
         print(f"\nA: {result['answer']}")
         print(f"\n[Sources: {len(result['sources'])} chunks | via {result['retrieval_source']}]")

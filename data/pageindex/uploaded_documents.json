@@ -1,0 +1,65 @@
+[
+  {
+    "filename": "luat-phong-chong-ma-tuy-2021.md",
+    "path": "data/standardized/legal/luat-phong-chong-ma-tuy-2021.md",
+    "type": "legal",
+    "content_length": 934,
+    "upload_backend": "local_manifest"
+  },
+  {
+    "filename": "nghi-dinh-105-2021.md",
+    "path": "data/standardized/legal/nghi-dinh-105-2021.md",
+    "type": "legal",
+    "content_length": 904,
+    "upload_backend": "local_manifest"
+  },
+  {
+    "filename": "nghi-dinh-116-2021.md",
+    "path": "data/standardized/legal/nghi-dinh-116-2021.md",
+    "type": "legal",
+    "content_length": 905,
+    "upload_backend": "local_manifest"
+  },
+  {
+    "filename": "nghi-dinh-57-2022.md",
+    "path": "data/standardized/legal/nghi-dinh-57-2022.md",
+    "type": "legal",
+    "content_length": 901,
+    "upload_backend": "local_manifest"
+  },
+  {
+    "filename": "chi-dan-an-tay-plo-2024.md",
+    "path": "data/standardized/news/chi-dan-an-tay-plo-2024.md",
+    "type": "news",
+    "content_length": 10466,
+    "upload_backend": "local_manifest"
+  },
+  {
+    "filename": "chi-dan-vov-2026.md",
+    "path": "data/standardized/news/chi-dan-vov-2026.md",
+    "type": "news",
+    "content_length": 11758,
+    "upload_backend": "local_manifest"
+  },
+  {
+    "filename": "huu-tin-vnexpress-2022.md",
+    "path": "data/standardized/news/huu-tin-vnexpress-2022.md",
+    "type": "news",
+    "content_length": 1568,
+    "upload_backend": "local_manifest"
+  },
+  {
+    "filename": "nghe-si-bi-bat-vietnamnet-2025.md",
+    "path": "data/standardized/news/nghe-si-bi-bat-vietnamnet-2025.md",
+    "type": "news",
+    "content_length": 9845,
+    "upload_backend": "local_manifest"
+  },
+  {
+    "filename": "nhikolai-dinh-tuoitre-2024.md",
+    "path": "data/standardized/news/nhikolai-dinh-tuoitre-2024.md",
+    "type": "news",
+    "content_length": 12094,
+    "upload_backend": "local_manifest"
+  }
+]

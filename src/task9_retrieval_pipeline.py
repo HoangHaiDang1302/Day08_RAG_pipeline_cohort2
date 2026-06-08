@@ -1,30 +1,46 @@
 """
-Task 9 — Retrieval Pipeline Hoàn Chỉnh.
+Task 9 - Complete retrieval pipeline.
 
-Kết hợp semantic search + lexical search + reranking + PageIndex fallback
-thành một pipeline thống nhất.
-
-Logic:
-    1. Chạy semantic_search + lexical_search song song
-    2. Merge kết quả (RRF hoặc weighted fusion)
-    3. Rerank
-    4. Nếu top result score < threshold → fallback sang PageIndex
-    5. Return top_k results
+Pipeline:
+    1. Run semantic search and lexical search.
+    2. Merge both ranked lists with Reciprocal Rank Fusion (RRF).
+    3. Rerank merged candidates.
+    4. If the best hybrid score is below threshold, fallback to PageIndex.
 """
 
-from .task5_semantic_search import semantic_search
-from .task6_lexical_search import lexical_search
-from .task7_reranking import rerank, rerank_rrf
-from .task8_pageindex_vectorless import pageindex_search
+from __future__ import annotations
 
+from src.task5_semantic_search import semantic_search
+from src.task6_lexical_search import lexical_search
+from src.task7_reranking import rerank, rerank_rrf
+from src.task8_pageindex_vectorless import pageindex_search
 
-# =============================================================================
-# CONFIGURATION
-# =============================================================================
-
-SCORE_THRESHOLD = 0.3   # Nếu best score < threshold → fallback PageIndex
+SCORE_THRESHOLD = 0.3
 DEFAULT_TOP_K = 5
-RERANK_METHOD = "cross_encoder"  # "cross_encoder" | "mmr" | "rrf"
+RERANK_METHOD = "keyword"
+
+
+def _tag_results(results: list[dict], retriever: str) -> list[dict]:
+    tagged = []
+    for result in results:
+        item = dict(result)
+        metadata = dict(item.get("metadata", {}))
+        metadata["retriever"] = retriever
+        item["metadata"] = metadata
+        tagged.append(item)
+    return tagged
+
+
+def _mark_hybrid(results: list[dict]) -> list[dict]:
+    marked = []
+    for result in results:
+        item = dict(result)
+        metadata = dict(item.get("metadata", {}))
+        metadata["pipeline"] = "semantic+lexical+rerank"
+        item["metadata"] = metadata
+        item["source"] = "hybrid"
+        marked.append(item)
+    return marked
 
 
 def retrieve(
@@ -34,71 +50,44 @@ def retrieve(
     use_reranking: bool = True,
 ) -> list[dict]:
     """
-    Retrieval pipeline hoàn chỉnh với fallback logic.
-
-    Pipeline:
-        Query
-          ├→ Semantic Search → results_dense
-          ├→ Lexical Search  → results_sparse
-          │
-          ├→ Merge (RRF) → merged_results
-          ├→ Rerank → reranked_results
-          │
-          └→ If best_score < threshold:
-                └→ PageIndex Vectorless → fallback_results
-
-    Args:
-        query: Câu truy vấn
-        top_k: Số lượng kết quả cuối cùng
-        score_threshold: Ngưỡng điểm tối thiểu cho hybrid results
-        use_reranking: Có áp dụng reranking hay không
+    Complete retrieval pipeline with fallback logic.
 
     Returns:
-        List of {
-            'content': str,
-            'score': float,
-            'metadata': dict,
-            'source': str  # 'hybrid' hoặc 'pageindex'
-        }
+        List of {'content': str, 'score': float, 'metadata': dict,
+        'source': 'hybrid' | 'pageindex'}.
     """
-    # TODO: Implement full retrieval pipeline
-    #
-    # Step 1: Song song chạy semantic + lexical
-    # dense_results = semantic_search(query, top_k=top_k * 2)
-    # sparse_results = lexical_search(query, top_k=top_k * 2)
-    #
-    # Step 2: Merge bằng RRF
-    # merged = rerank_rrf([dense_results, sparse_results], top_k=top_k * 2)
-    # for item in merged:
-    #     item["source"] = "hybrid"
-    #
-    # Step 3: Rerank
-    # if use_reranking and merged:
-    #     final_results = rerank(query, merged, top_k=top_k, method=RERANK_METHOD)
-    # else:
-    #     final_results = merged[:top_k]
-    #
-    # Step 4: Check threshold → fallback
-    # if not final_results or final_results[0]["score"] < score_threshold:
-    #     print(f"  ⚠ Hybrid score ({final_results[0]['score']:.3f} if final_results else 0}) "
-    #           f"< threshold ({score_threshold}). Fallback → PageIndex")
-    #     fallback = pageindex_search(query, top_k=top_k)
-    #     return fallback
-    #
-    # return final_results[:top_k]
-    raise NotImplementedError("Implement retrieve")
+    if top_k <= 0:
+        return []
+
+    search_k = max(top_k * 2, top_k)
+    dense_results = _tag_results(semantic_search(query, top_k=search_k), "semantic")
+    sparse_results = _tag_results(lexical_search(query, top_k=search_k), "lexical")
+
+    merged = rerank_rrf([dense_results, sparse_results], top_k=search_k)
+    merged = _mark_hybrid(merged)
+
+    if use_reranking and merged:
+        final_results = rerank(query, merged, top_k=top_k, method=RERANK_METHOD)
+        final_results = _mark_hybrid(final_results)
+    else:
+        final_results = merged[:top_k]
+
+    best_score = final_results[0]["score"] if final_results else 0.0
+    if not final_results or best_score < score_threshold:
+        return pageindex_search(query, top_k=top_k)
+
+    return final_results[:top_k]
 
 
 if __name__ == "__main__":
     test_queries = [
-        "Hình phạt cho tội tàng trữ trái phép chất ma tuý",
-        "Nghệ sĩ nào bị bắt vì sử dụng ma tuý năm 2024",
-        "Luật phòng chống ma tuý 2021 quy định gì về cai nghiện",
+        "Hinh phat cho toi tang tru trai phep chat ma tuy",
+        "Nghe si nao bi bat vi su dung ma tuy nam 2024",
+        "Luat phong chong ma tuy 2021 quy dinh gi ve cai nghien",
     ]
 
-    for q in test_queries:
-        print(f"\nQuery: {q}")
+    for question in test_queries:
+        print(f"\nQuery: {question}")
         print("-" * 60)
-        results = retrieve(q, top_k=3)
-        for i, r in enumerate(results, 1):
-            print(f"  {i}. [{r['score']:.3f}] [{r['source']}] {r['content'][:80]}...")
+        for index, result in enumerate(retrieve(question, top_k=3), 1):
+            print(f"  {index}. [{result['score']:.3f}] [{result['source']}] {result['content'][:80]}...")
