@@ -1,157 +1,221 @@
-# Bài Tập Nhóm - RAG Evaluation Pipeline
+# Bài Tập Nhóm — Drug Law RAG Chatbot & Evaluation Pipeline
 
-## Mục Tiêu
+> Nguyễn Trường Phúc - 2A202600767
+> 
+> Trần Minh Anh - 2A202600706
+> 
+> Hoàng Hải Đăng - 2A202600916
+> 
+> Nguyễn Huyền San - 2A202600835
+> 
+> Vũ Đăng Khiêm -2A20260072
+> 
+> Lê Dương Hiếu - 2A202600635
 
-Nhóm chọn hướng **RAG Evaluation Pipeline** để đánh giá hệ thống RAG trả lời câu hỏi về:
+---
 
-- Pháp luật Việt Nam liên quan đến ma túy và chất cấm.
-- Tin tức về nghệ sĩ Việt Nam liên quan đến ma túy.
+## Tổng Quan Sản Phẩm
 
-Pipeline cá nhân từ Task 1-10 được tích hợp làm hệ thống RAG nền:
+Nhóm lựa chọn **cả 2 yêu cầu**: xây dựng RAG Chatbot hoàn chỉnh **và** Evaluation Pipeline đánh giá chất lượng hệ thống.
 
-```text
-data/landing
-  -> data/standardized
-  -> Task 4 chunking + local index
-  -> Task 5 semantic search
-  -> Task 6 lexical BM25
-  -> Task 7 reranking
-  -> Task 8 PageIndex fallback
-  -> Task 9 retrieval pipeline
-  -> Task 10 generation with citation
-  -> group_project/evaluation
-```
+**Domain:** Pháp luật Việt Nam về ma tuý & tin tức nghệ sĩ liên quan.
+
+---
 
 ## Kiến Trúc Hệ Thống
 
-```text
-User Question
-  |
-  v
-Task 9 Retrieval Pipeline
-  |-- Semantic Search
-  |-- Lexical Search / BM25
-  |-- RRF Merge
-  |-- Reranking
-  |-- PageIndex fallback
-  v
-Task 10 Generation with Citation
-  |
-  v
-Evaluation Pipeline
-  |-- Golden Dataset
-  |-- Local Metrics
-  |-- DeepEval Metrics
-  |-- A/B Comparison
-  v
-results.md
+```
+Người dùng
+    │
+    ▼
+┌─────────────────────────────────────────────────────┐
+│              FastAPI Web App (app.py)                │
+│  ┌──────────────┐    ┌──────────────────────────┐   │
+│  │  Guardrail   │    │   Conversation Memory    │   │
+│  │ (LLM judge)  │    │  (session → history[])   │   │
+│  └──────┬───────┘    └──────────────────────────┘   │
+│         │ ON_TOPIC                                   │
+│         ▼                                            │
+│  ┌──────────────────────────────────────────────┐   │
+│  │           Retrieval Pipeline (Task 9)        │   │
+│  │                                              │   │
+│  │  Query ──┬── Semantic Search (Task 5)  ──┐   │   │
+│  │          └── Lexical BM25  (Task 6)   ──┴──▶ │   │
+│  │                  RRF Merge                   │   │
+│  │                     │                        │   │
+│  │          Cross-Encoder Reranker (Task 7)     │   │
+│  │          AITeamVN/Vietnamese_Reranker        │   │
+│  │                     │                        │   │
+│  │          score < threshold → PageIndex (T8)  │   │
+│  └──────────────────────────────────────────────┘   │
+│         │                                            │
+│         ▼                                            │
+│  ┌──────────────────────────────────────────────┐   │
+│  │         Generation (Task 10)                 │   │
+│  │  Lost-in-middle reorder → Format context     │   │
+│  │  → GPT-4o-mini (OpenRouter) → Answer + cite  │   │
+│  └──────────────────────────────────────────────┘   │
+│         │                                            │
+│         ▼                                            │
+│   Answer + Source Pills UI (static/index.html)       │
+└─────────────────────────────────────────────────────┘
+
+Vector Store: ChromaDB (cosine, persistent)
+Embedding:    AITeamVN/Vietnamese_Embedding (1024-dim, Kaggle GPU)
+              ↳ fallback: OpenAI text-embedding-3-small (1536-dim)
+Reranker:     AITeamVN/Vietnamese_Reranker (Kaggle GPU)
+              ↳ fallback: Jina Reranker API → RRF score
+LLM:          GPT-4o-mini via OpenRouter (hoặc OpenAI trực tiếp)
 ```
 
-## Deliverables
+---
 
-| File | Mô tả | Trạng thái |
-|------|------|------------|
-| `group_project/evaluation/golden_dataset.json` | 15 cặp Q&A gồm question, expected_answer, expected_context | Done |
-| `group_project/evaluation/eval_pipeline.py` | Script chạy evaluation local và DeepEval | Done |
-| `group_project/evaluation/results.md` | Báo cáo điểm, A/B comparison, worst performers, recommendations | Done |
-| `group_project/evaluation/deepeval_results.json` | Raw output khi chạy DeepEval | Sinh tự động |
+## Tech Stack
 
-## Golden Dataset
+| Layer          | Công nghệ                                                          |
+| -------------- | ------------------------------------------------------------------ |
+| Web framework  | FastAPI + Uvicorn                                                  |
+| Frontend       | Vanilla JS + CSS (AI20K dark theme)                                |
+| Vector DB      | ChromaDB (persistent, cosine similarity)                           |
+| Embedding      | `AITeamVN/Vietnamese_Embedding` (Kaggle T4 GPU) / OpenAI fallback  |
+| Lexical search | BM25 (rank-bm25)                                                   |
+| Reranker       | `AITeamVN/Vietnamese_Reranker` (Kaggle T4 GPU) / Jina API fallback |
+| LLM            | GPT-4o-mini qua OpenRouter API                                     |
+| Evaluation     | RAGAS-style LLM-as-judge (self-contained, không cần ragas package) |
 
-Dataset có 15 câu hỏi, chia thành 3 nhóm:
+---
 
-- Legal: câu hỏi về Luật Phòng, chống ma túy 2021 và các nghị định liên quan.
-- News: câu hỏi về Hữu Tín, Nhikolai Đinh, Chi Dân, An Tây, Nguyễn Công Trí và các bài báo đã crawl.
-- Hybrid: câu hỏi kiểm tra khả năng kết hợp legal/news và citation metadata.
+## Cấu Trúc Thư Mục
 
-## Metrics
+```
+Day08_RAG_pipeline_cohort2/
+├── app.py                          # FastAPI backend + guardrail + chat endpoint
+├── src/
+│   ├── task1_collect_legal_docs.py # Thu thập văn bản pháp luật
+│   ├── task2_crawl_news.py         # Crawl tin tức nghệ sĩ
+│   ├── task3_convert_markdown.py   # Chuẩn hoá sang Markdown
+│   ├── task4_chunking_indexing.py  # Chunk + index vào ChromaDB
+│   ├── task5_semantic_search.py    # Dense vector search
+│   ├── task6_lexical_search.py     # BM25 sparse search
+│   ├── task7_reranking.py          # Cross-encoder reranking
+│   ├── task8_pageindex_vectorless.py # PageIndex fallback
+│   ├── task9_retrieval_pipeline.py # Hybrid pipeline + fallback logic
+│   ├── task10_generation.py        # LLM generation + citation
+│   └── llm_client.py              # OpenRouter / OpenAI client factory
+├── static/
+│   ├── index.html                  # Chat UI
+│   ├── style.css                   # AI20K dark/light theme
+│   └── app.js                      # Frontend logic + modal sources
+├── group_project/
+│   └── evaluation/
+│       ├── golden_dataset.json     # 15 Q&A pairs
+│       ├── eval_pipeline.py        # RAGAS-style evaluation script
+│       └── results.md              # Kết quả A/B evaluation
+└── vietnamese_model_server.ipynb   # Kaggle notebook serving 2 Vietnamese models
+```
 
-Script hỗ trợ 4 metrics theo yêu cầu:
-
-| Metric | Ý nghĩa |
-|--------|---------|
-| Faithfulness | Câu trả lời có bám vào retrieved context và có citation không |
-| Answer Relevance | Câu trả lời có liên quan tới question và expected answer không |
-| Context Recall | Retrieved context có bao phủ expected answer/context không |
-| Context Precision | Tỷ lệ chunks hữu ích trong context truy xuất |
-
-## A/B Comparison
-
-Script so sánh 2 cấu hình:
-
-| Config | Mô tả |
-|--------|------|
-| Config A | Hybrid retrieval + RRF merge + reranking + generation |
-| Config B | Hybrid retrieval + RRF merge, bỏ reranking |
-
-Mục tiêu là đo tác động của reranking trong pipeline.
+---
 
 ## Hướng Dẫn Chạy
 
-Cài dependencies:
+### 1. Cài đặt
 
-```powershell
-.venv\Scripts\python.exe -m pip install -r requirements.txt
+```bash
+pip install -r requirements.txt
 ```
 
-Chạy local evaluation:
-
-```powershell
-.venv\Scripts\python.exe group_project\evaluation\eval_pipeline.py
-```
-
-Chạy DeepEval:
-
-```powershell
-.venv\Scripts\python.exe group_project\evaluation\eval_pipeline.py --framework deepeval
-```
-
-Chạy thử DeepEval trên 1 case:
-
-```powershell
-.venv\Scripts\python.exe group_project\evaluation\eval_pipeline.py --framework deepeval --limit 1
-```
-
-Chạy cả local và DeepEval:
-
-```powershell
-.venv\Scripts\python.exe group_project\evaluation\eval_pipeline.py --framework both
-```
-
-## Lưu Ý DeepEval
-
-DeepEval thường dùng LLM judge, nên cần cấu hình provider/API key phù hợp trong `.env`. Nhóm dùng OpenRouter làm judge mặc định cho DeepEval vì hỗ trợ OpenAI-compatible API và có nhiều model `:free`.
-
-Khuyến nghị:
+### 2. Cấu hình `.env`
 
 ```env
-DEEPEVAL_PROVIDER=openrouter
-OPENROUTER_API_KEY=sk-or-v1-xxx
-OPENROUTER_BASE_URL=https://openrouter.ai/api/v1
-OPENROUTER_MODEL=meta-llama/llama-3.3-70b-instruct:free
+# LLM (chọn 1 trong 2)
+OPENROUTER_API_KEY=sk-or-...   # ưu tiên nếu có
+OPENAI_API_KEY=sk-...          # fallback
+
+# Kaggle GPU servers (optional — nếu đang serve Vietnamese models)
+KAGGLE_EMBED_URL=https://xxxx.ngrok-free.app
+KAGGLE_RERANK_URL=https://yyyy.ngrok-free.app
 ```
 
-`meta-llama/llama-3.3-70b-instruct:free` được chọn vì là model lớn, multilingual tốt, phù hợp làm LLM judge cho câu hỏi tiếng Việt. Không dùng `openrouter/free` cho evaluation chính vì router random có thể làm kết quả không ổn định giữa các lần chạy.
+### 3. Index dữ liệu (lần đầu)
 
-Nếu LLM judge thiếu quota hoặc lỗi provider, script vẫn ghi lỗi vào `deepeval_results.json` và giữ báo cáo local trong `results.md`.
+```bash
+python -m src.task4_chunking_indexing
+```
+
+### 4. Chạy webapp
+
+```bash
+uvicorn app:app --host 0.0.0.0 --port 8000 --reload
+# Mở http://localhost:8000
+```
+
+### 5. Chạy Evaluation Pipeline
+
+```bash
+python -m group_project.evaluation.eval_pipeline
+# Kết quả ghi vào group_project/evaluation/results.md
+```
+
+---
+
+## Evaluation Pipeline
+
+### Framework
+
+**RAGAS-style LLM-as-judge** — implement 4 metrics bằng prompt engineering trực tiếp, không phụ thuộc ragas package (tránh dependency conflict với langchain-community).
+
+### Dataset
+
+`golden_dataset.json` — 15 cặp Q&A bao gồm:
+
+- Điều luật hình sự (tàng trữ, vận chuyển, mua bán, trồng cây ma tuý)
+- Luật Phòng chống ma tuý 2021 (cai nghiện, tiền chất, trường học)
+- Nghị định 105/2021/NĐ-CP
+- Tin tức nghệ sĩ liên quan ma tuý
+
+### Kết Quả A/B
+
+| Metric            | Config A — Hybrid + Rerank | Config B — Dense-only |      Δ      |
+| ----------------- | :------------------------: | :-------------------: | :---------: |
+| Faithfulness      |           0.6000           |        0.5667         |   +0.0333   |
+| Answer Relevancy  |           0.6000           |        0.5667         |   +0.0333   |
+| Context Recall    |           0.5333           |        0.4333         |   +0.1000   |
+| Context Precision |           0.3933           |        0.3600         |   +0.0333   |
+| **Average**       |         **0.5317**         |      **0.4817**       | **+0.0500** |
+
+**Kết luận:** Config A (Hybrid + Rerank) vượt trội hơn ở tất cả 4 metrics, đặc biệt Context Recall (+0.10) — hybrid search bắt được các từ khoá pháp lý cụ thể (số điều, tên văn bản) mà dense-only bỏ sót.
+
+### Top 3 Cải Tiến Đề Xuất
+
+1. **Chunk theo điều/khoản** — thay vì fixed-size, giữ nguyên ranh giới điều luật → tăng context_precision
+2. **Query expansion** — LLM sinh 2-3 biến thể query trước khi retrieve → tăng context_recall
+3. **Fine-tune reranker** — tạo training set từ golden_dataset, fine-tune `AITeamVN/Vietnamese_Reranker` → tăng faithfulness
+
+---
+
+## Tính Năng Nổi Bật
+
+- **Guardrail thông minh** — LLM classifier phân biệt on-topic/off-topic, bao gồm kiến thức nền về ma tuý (không chỉ pháp luật)
+- **Hybrid search** — kết hợp ChromaDB cosine + BM25, merge RRF → tốt hơn pure dense trên văn bản pháp lý
+- **Lost-in-middle reorder** — sắp xếp lại chunks theo Liu et al. 2023 trước khi đưa vào LLM
+- **Dual GPU serving** — `AITeamVN/Vietnamese_Embedding` trên cuda:0, `AITeamVN/Vietnamese_Reranker` trên cuda:1 (Kaggle T4)
+- **Source pills** — mỗi response hiển thị pill tài liệu tham khảo, click mở modal full content với markdown render
+- **Dark/Light mode** — toggle persistent qua localStorage
+- **Conversation memory** — giữ 6 turns gần nhất, follow-up questions hoạt động đúng
+
+---
 
 ## Phân Công Công Việc
 
-| Thành viên | MSSV | Nhiệm vụ | Trạng thái |
-|-----------|------|----------|------------|
-| Hoàng Hải Đăng | N/A | Tích hợp Task 1-10, tạo local RAG pipeline | Done |
-| Hoàng Hải Đăng | N/A | Xây dựng golden dataset 15 Q&A | Done |
-| Hoàng Hải Đăng | N/A | Viết evaluation pipeline local + DeepEval | Done |
-| Hoàng Hải Đăng | N/A | Viết báo cáo kết quả và hướng chạy | Done |
+| Thành viên         | MSSV        | Nhiệm vụ                                                          | Trạng thái    |
+| ------------------ | ----------- | ----------------------------------------------------------------- | ------------- |
+| Nguyễn Trường Phúc | 2A202600767 | Implement full pipeline (Task 1–10)e | Hoàn thành |
+| Trần Minh Anh | 2A202600706 | Serving custom embedding/reranker models on server | Hoàn thành |
+| Hoàng Hải Đăng | 2A202600916 | Implement RAG Chatbot UI | Hoàn thành |
+| Nguyễn Huyền San | 2A202600835 | Add fallback OpenAI/Jina when custom model error | Hoàn thành |
+| Vũ Đăng Khiêm | 2A202600727 | Run Eval pipeline with RAGAS | Hoàn thành |
+| Lê Dương Hiếu | 2A202600635 | Add gruadrail, out-of-scope filtering | Hoàn thành |
 
-## Kết Quả Hiện Tại
+---
 
-Local evaluation đã chạy được và sinh `results.md`. Kết quả gần nhất:
-
-```text
-Loaded 15 test cases
-Config A average: 0.769
-Config B average: 0.822
-```
-
-Điểm còn hạn chế chính: một số PDF pháp luật hiện được convert bằng metadata fallback, nên câu hỏi pháp luật chi tiết sẽ cải thiện rõ nếu cài MarkItDown và extract full text từ PDF.
+> **Lưu ý:** Giữ lại repo này nếu học Track 3 giai đoạn 2 — sẽ phát triển tiếp lên Knowledge Graph để xử lý các câu hỏi phức tạp đa hop.
