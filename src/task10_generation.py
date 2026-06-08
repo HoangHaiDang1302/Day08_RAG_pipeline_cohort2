@@ -1,12 +1,9 @@
 """
 Task 10 - Generation with citations.
 
-This local implementation does not require an LLM API key. It retrieves context,
-reorders chunks to reduce "lost in the middle", formats source labels, and
-builds a grounded Vietnamese answer with citations from the retrieved chunks.
-
-When an OpenAI/Gemini key is available, the answer-construction part can be
-replaced with an LLM call while keeping reorder_for_llm() and format_context().
+This module uses the configured OpenAI-compatible LLM provider
+(Groq/OpenRouter/OpenAI) by default when an API key is available. The local
+extractive answer remains a fallback for quota, network or SDK failures.
 """
 
 from __future__ import annotations
@@ -19,7 +16,7 @@ from src.task9_retrieval_pipeline import retrieve
 try:
     from dotenv import load_dotenv
 
-    load_dotenv()
+    load_dotenv(os.path.join(os.path.dirname(os.path.dirname(__file__)), ".env"))
 except Exception:
     pass
 
@@ -38,8 +35,15 @@ Every factual claim must include a source citation.
 If the context is insufficient, say: I cannot verify this information."""
 
 DEFAULT_LLM_PROVIDER = os.getenv("LLM_PROVIDER", "groq").lower()
-DEFAULT_LLM_MODEL = os.getenv("GROQ_MODEL") or os.getenv("OPENAI_MODEL") or "llama-3.3-70b-versatile"
 GROQ_BASE_URL = os.getenv("GROQ_BASE_URL", "https://api.groq.com/openai/v1")
+OPENROUTER_BASE_URL = os.getenv("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
+
+if DEFAULT_LLM_PROVIDER == "openrouter":
+    DEFAULT_LLM_MODEL = os.getenv("OPENROUTER_MODEL", "meta-llama/llama-3.3-70b-instruct:free")
+elif DEFAULT_LLM_PROVIDER == "openai":
+    DEFAULT_LLM_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
+else:
+    DEFAULT_LLM_MODEL = os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile")
 
 
 def reorder_for_llm(chunks: list[dict]) -> list[dict]:
@@ -137,6 +141,10 @@ def _generate_with_openai_compatible(query: str, context: str) -> tuple[str | No
         api_key = os.getenv("GROQ_API_KEY")
         base_url = GROQ_BASE_URL
         missing_key_message = "GROQ_API_KEY is missing"
+    elif DEFAULT_LLM_PROVIDER == "openrouter":
+        api_key = os.getenv("OPENROUTER_API_KEY")
+        base_url = OPENROUTER_BASE_URL
+        missing_key_message = "OPENROUTER_API_KEY is missing"
     else:
         api_key = os.getenv("OPENAI_API_KEY")
         base_url = os.getenv("OPENAI_BASE_URL")
@@ -192,7 +200,11 @@ def generate_with_citation(query: str, top_k: int = TOP_K, use_llm: bool | None 
         }
     """
     if use_llm is None:
-        use_llm = os.getenv("ENABLE_LLM_GENERATION", "").lower() in {"1", "true", "yes"}
+        use_llm = bool(
+            os.getenv("GROQ_API_KEY")
+            or os.getenv("OPENROUTER_API_KEY")
+            or os.getenv("OPENAI_API_KEY")
+        )
 
     chunks = retrieve(query, top_k=top_k)
     reordered = reorder_for_llm(chunks)

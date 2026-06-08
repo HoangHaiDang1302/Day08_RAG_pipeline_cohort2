@@ -1,5 +1,5 @@
 """
-Task 4 - Chunking and local indexing for the RAG corpus.
+Task 4 - Chunking and indexing for the RAG corpus.
 
 Design choices:
     - Chunking: recursive character splitting, because the corpus mixes legal
@@ -8,9 +8,8 @@ Design choices:
     - Chunk size: 500 chars with 80 chars overlap. Legal Vietnamese text often
       has long clauses, so this keeps chunks small enough for retrieval tests
       while preserving nearby context across boundaries.
-    - Embedding: local hashing embedding, 384 dimensions. It is lightweight and
-      deterministic, so the lab can run before sentence-transformers or external
-      vector stores are installed. It can later be swapped for BAAI/bge-m3.
+    - Embedding: configured OpenAI-compatible embedding API first. Local hashing
+      embedding is only a fallback when no embedding key/provider is available.
     - Vector store: local JSON index in data/index/. This keeps Task 4 runnable
       offline and gives Tasks 5-9 a stable source of chunks.
 """
@@ -20,9 +19,17 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import os
 import re
 from pathlib import Path
 from typing import Iterable
+
+try:
+    from dotenv import load_dotenv
+
+    load_dotenv(Path(__file__).parent.parent / ".env")
+except Exception:
+    pass
 
 PROJECT_DIR = Path(__file__).parent.parent
 STANDARDIZED_DIR = PROJECT_DIR / "data" / "standardized"
@@ -34,9 +41,10 @@ CHUNK_SIZE = 500
 CHUNK_OVERLAP = 80
 CHUNKING_METHOD = "recursive"
 
-# Local deterministic embedding keeps the lab runnable without model downloads.
-EMBEDDING_MODEL = "local-hashing-embedding"
-EMBEDDING_DIM = 384
+EMBEDDING_PROVIDER = os.getenv("EMBEDDING_PROVIDER", os.getenv("LLM_PROVIDER", "groq")).lower()
+EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "text-embedding-3-small")
+LOCAL_EMBEDDING_MODEL = "local-hashing-embedding"
+EMBEDDING_DIM = int(os.getenv("EMBEDDING_DIM", "384"))
 
 # A local JSON store is enough for tests and can feed later tasks.
 VECTOR_STORE = "local_json"
@@ -155,7 +163,7 @@ def chunk_documents(documents: list[dict]) -> list[dict]:
 
 
 def _tokenize(text: str) -> list[str]:
-    return re.findall(r"[\wÀ-ỹ]+", text.lower(), flags=re.UNICODE)
+    return re.findall(r"\w+", text.lower(), flags=re.UNICODE)
 
 
 def _hashing_embedding(tokens: Iterable[str]) -> list[float]:
@@ -172,20 +180,79 @@ def _hashing_embedding(tokens: Iterable[str]) -> list[float]:
     return [value / norm for value in vector]
 
 
+def _embedding_api_config() -> tuple[str, str, str | None, str | None]:
+    if EMBEDDING_PROVIDER == "openrouter":
+        return (
+            "openrouter",
+            os.getenv("EMBEDDING_MODEL", os.getenv("OPENROUTER_EMBEDDING_MODEL", EMBEDDING_MODEL)),
+            os.getenv("OPENROUTER_API_KEY"),
+            os.getenv("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1"),
+        )
+    if EMBEDDING_PROVIDER == "openai":
+        return (
+            "openai",
+            os.getenv("EMBEDDING_MODEL", os.getenv("OPENAI_EMBEDDING_MODEL", EMBEDDING_MODEL)),
+            os.getenv("OPENAI_API_KEY"),
+            os.getenv("OPENAI_BASE_URL"),
+        )
+    if EMBEDDING_PROVIDER == "groq":
+        return (
+            "groq",
+            os.getenv("EMBEDDING_MODEL", EMBEDDING_MODEL),
+            os.getenv("GROQ_API_KEY"),
+            os.getenv("GROQ_BASE_URL", "https://api.groq.com/openai/v1"),
+        )
+    return (
+        EMBEDDING_PROVIDER,
+        os.getenv("EMBEDDING_MODEL", EMBEDDING_MODEL),
+        os.getenv("EMBEDDING_API_KEY"),
+        os.getenv("EMBEDDING_BASE_URL"),
+    )
+
+
+def _embed_texts_with_api(texts: list[str]) -> tuple[list[list[float]] | None, str | None, str | None]:
+    provider, model, api_key, base_url = _embedding_api_config()
+    if not api_key:
+        return None, model, f"{provider} embedding API key is missing"
+
+    try:
+        from openai import OpenAI
+    except Exception as exc:
+        return None, model, f"OpenAI SDK unavailable: {type(exc).__name__}: {exc}"
+
+    try:
+        client = OpenAI(api_key=api_key, base_url=base_url) if base_url else OpenAI(api_key=api_key)
+        response = client.embeddings.create(model=model, input=texts)
+        vectors = [item.embedding for item in response.data]
+    except Exception as exc:
+        return None, model, f"{type(exc).__name__}: {exc}"
+
+    return vectors, model, None
+
+
 def embed_chunks(chunks: list[dict]) -> list[dict]:
     """
-    Add a deterministic local embedding to each chunk.
+    Add API embeddings to chunks, falling back to deterministic local embeddings.
 
     Returns:
         Each chunk dict with an added 'embedding': list[float].
     """
+    api_vectors, api_model, api_error = _embed_texts_with_api([chunk.get("content", "") for chunk in chunks])
     embedded: list[dict] = []
-    for chunk in chunks:
+    for index, chunk in enumerate(chunks):
         item = dict(chunk)
         item["metadata"] = dict(chunk.get("metadata", {}))
-        item["metadata"]["embedding_model"] = EMBEDDING_MODEL
-        item["metadata"]["embedding_dim"] = EMBEDDING_DIM
-        item["embedding"] = _hashing_embedding(_tokenize(chunk.get("content", "")))
+        if api_vectors is not None:
+            item["embedding"] = api_vectors[index]
+            item["metadata"]["embedding_provider"] = EMBEDDING_PROVIDER
+            item["metadata"]["embedding_model"] = api_model
+            item["metadata"]["embedding_dim"] = len(api_vectors[index])
+        else:
+            item["embedding"] = _hashing_embedding(_tokenize(chunk.get("content", "")))
+            item["metadata"]["embedding_provider"] = "local_fallback"
+            item["metadata"]["embedding_model"] = LOCAL_EMBEDDING_MODEL
+            item["metadata"]["embedding_dim"] = EMBEDDING_DIM
+            item["metadata"]["embedding_error"] = api_error
         embedded.append(item)
     return embedded
 
@@ -201,8 +268,9 @@ def index_to_vectorstore(chunks: list[dict]) -> Path:
     INDEX_DIR.mkdir(parents=True, exist_ok=True)
     payload = {
         "vector_store": VECTOR_STORE,
-        "embedding_model": EMBEDDING_MODEL,
-        "embedding_dim": EMBEDDING_DIM,
+        "embedding_provider": EMBEDDING_PROVIDER,
+        "embedding_model": chunks[0]["metadata"].get("embedding_model") if chunks else EMBEDDING_MODEL,
+        "embedding_dim": len(chunks[0].get("embedding", [])) if chunks else EMBEDDING_DIM,
         "chunking_method": CHUNKING_METHOD,
         "chunk_size": CHUNK_SIZE,
         "chunk_overlap": CHUNK_OVERLAP,
@@ -217,7 +285,7 @@ def run_pipeline() -> Path:
     print("=" * 50)
     print("Task 4: Chunking & Indexing")
     print(f"  Chunking: {CHUNKING_METHOD} (size={CHUNK_SIZE}, overlap={CHUNK_OVERLAP})")
-    print(f"  Embedding: {EMBEDDING_MODEL} (dim={EMBEDDING_DIM})")
+    print(f"  Embedding provider: {EMBEDDING_PROVIDER} (model={EMBEDDING_MODEL})")
     print(f"  Vector Store: {VECTOR_STORE}")
     print("=" * 50)
 

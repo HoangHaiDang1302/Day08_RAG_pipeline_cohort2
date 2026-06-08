@@ -42,6 +42,14 @@ LEGAL_DOCUMENTS = [
             "https://chinhphu.vn/?docid=206454&pageid=27160",
         ],
     },
+    {
+        "name": "Nghi dinh 116/2021/ND-CP ve cai nghien va quan ly sau cai nghien",
+        "filename": "nghi-dinh-116-2021.pdf",
+        "urls": [
+            "https://congbao.chinhphu.vn/tai-ve-van-ban-so-116-2021-nd-cp-36404-39132?format=pdf",
+            "https://congbao.chinhphu.vn/tai-ve-van-ban-so-116-2021-nd-cp-36404-39135?format=pdf",
+        ],
+    },
 ]
 
 

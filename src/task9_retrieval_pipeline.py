@@ -15,9 +15,9 @@ from src.task6_lexical_search import lexical_search
 from src.task7_reranking import rerank, rerank_rrf
 from src.task8_pageindex_vectorless import pageindex_search
 
-SCORE_THRESHOLD = 0.3
+SCORE_THRESHOLD = 0.0
 DEFAULT_TOP_K = 5
-RERANK_METHOD = "keyword"
+RERANK_METHOD = "llm"
 
 
 def _tag_results(results: list[dict], retriever: str) -> list[dict]:
@@ -59,7 +59,7 @@ def retrieve(
     if top_k <= 0:
         return []
 
-    search_k = max(top_k * 2, top_k)
+    search_k = max(top_k * 5, 20)
     dense_results = _tag_results(semantic_search(query, top_k=search_k), "semantic")
     sparse_results = _tag_results(lexical_search(query, top_k=search_k), "lexical")
 

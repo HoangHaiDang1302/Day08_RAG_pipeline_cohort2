@@ -19,6 +19,52 @@ from typing import Any
 LANDING_DIR = Path(__file__).parent.parent / "data" / "landing"
 OUTPUT_DIR = Path(__file__).parent.parent / "data" / "standardized"
 
+LEGAL_DOCUMENT_SUMMARIES = {
+    "luat-phong-chong-ma-tuy-2021": {
+        "legal_title": "Luật Phòng, chống ma túy 2021",
+        "legal_number": "73/2021/QH14",
+        "topic": (
+            "phòng, chống ma túy; kiểm soát chất ma túy và tiền chất; quản lý người sử dụng "
+            "trái phép chất ma túy; cai nghiện ma túy; quản lý sau cai nghiện ma túy"
+        ),
+        "retrieval_hints": (
+            "Use this document for questions about the main Vietnamese anti-drug law, "
+            "Luật Phòng, chống ma túy 2021, drug prevention policy, addiction treatment, "
+            "and post-rehabilitation management under the law."
+        ),
+    },
+    "nghi-dinh-105-2021": {
+        "legal_title": "Nghị định 105/2021/NĐ-CP",
+        "legal_number": "105/2021/NĐ-CP",
+        "topic": "hướng dẫn thi hành Luật Phòng, chống ma túy",
+        "retrieval_hints": (
+            "Use this document when the user asks which decree guides or implements "
+            "Luật Phòng, chống ma túy 2021."
+        ),
+    },
+    "nghi-dinh-116-2021": {
+        "legal_title": "Nghị định 116/2021/NĐ-CP",
+        "legal_number": "116/2021/NĐ-CP",
+        "topic": (
+            "cai nghiện ma túy; cai nghiện tự nguyện; cai nghiện bắt buộc; cơ sở cai nghiện; "
+            "quản lý sau cai nghiện ma túy"
+        ),
+        "retrieval_hints": (
+            "Use this document for questions about drug rehabilitation, compulsory or voluntary "
+            "rehabilitation, rehabilitation facilities, and post-rehabilitation management."
+        ),
+    },
+    "nghi-dinh-57-2022": {
+        "legal_title": "Nghị định 57/2022/NĐ-CP",
+        "legal_number": "57/2022/NĐ-CP",
+        "topic": "danh mục chất ma túy và tiền chất",
+        "retrieval_hints": (
+            "Use this document for questions about controlled narcotic substances, precursors, "
+            "and lists of narcotic substances."
+        ),
+    },
+}
+
 
 def _get_markitdown():
     try:
@@ -35,6 +81,25 @@ def _markdown_header(title: str, metadata: dict[str, Any]) -> str:
         if value not in (None, "", []):
             lines.append(f"**{key}:** {value}")
     lines.extend(["", "---", ""])
+    return "\n".join(lines)
+
+
+def _legal_summary_block(filepath: Path) -> str:
+    summary = LEGAL_DOCUMENT_SUMMARIES.get(filepath.stem)
+    if not summary:
+        return ""
+
+    lines = [
+        "## Retrieval summary",
+        "",
+        f"- Source file: `{filepath.name}`",
+        f"- Markdown file: `{filepath.stem}.md`",
+        f"- Legal title: {summary['legal_title']}",
+        f"- Legal number: {summary['legal_number']}",
+        f"- Topic: {summary['topic']}",
+        f"- Retrieval hints: {summary['retrieval_hints']}",
+        "",
+    ]
     return "\n".join(lines)
 
 
@@ -63,23 +128,22 @@ def _convert_with_markitdown(filepath: Path) -> str | None:
 
 
 def _fallback_legal_markdown(filepath: Path) -> str:
+    summary = LEGAL_DOCUMENT_SUMMARIES.get(filepath.stem, {})
     metadata = {
         "source_file": filepath.name,
         "file_type": filepath.suffix.lower(),
         "file_size_bytes": filepath.stat().st_size,
         "conversion": "metadata fallback because MarkItDown/PDF parser is unavailable",
+        "legal_title": summary.get("legal_title"),
+        "legal_number": summary.get("legal_number"),
     }
-    body = (
+    body = _legal_summary_block(filepath) + (
         "This Markdown file records a legal document collected for the RAG corpus.\n\n"
         f"The original file is `{filepath.name}` in `data/landing/legal/`. "
-        "It should be converted with MarkItDown when the dependency is available. "
-        "The document is still represented here with enough metadata for indexing "
-        "tests and for downstream traceability. For production-quality retrieval, "
-        "rerun `python src/task3_convert_markdown.py` after installing `markitdown` "
-        "so the full PDF/DOC text can be extracted into this Markdown file.\n\n"
-        "Relevant topic: Vietnamese legal documents about drug prevention, drug "
-        "control, controlled substances, narcotic substances, precursors, and the "
-        "implementation of the Law on Drug Prevention and Control."
+        "MarkItDown was executed, but this PDF did not expose extractable text in the current environment. "
+        "The document is represented with structured metadata and retrieval hints so API reranking and "
+        "citation generation can still identify the correct legal source. For clause-level answers, use "
+        "an OCR-capable conversion step and rerun this task.\n"
     )
     return _markdown_header(filepath.stem, metadata) + body + "\n"
 
@@ -110,7 +174,7 @@ def convert_legal_docs() -> list[Path]:
                 "file_size_bytes": filepath.stat().st_size,
                 "conversion": "markitdown",
             }
-            text = _markdown_header(filepath.stem, metadata) + text + "\n"
+            text = _markdown_header(filepath.stem, metadata) + _legal_summary_block(filepath) + text + "\n"
 
         output_path = output_dir / f"{filepath.stem}.md"
         output_path.write_text(text, encoding="utf-8")

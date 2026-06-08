@@ -1,204 +1,157 @@
-# Bài Tập Nhóm — Search Engine / RAG Chatbot
+# Bài Tập Nhóm - RAG Evaluation Pipeline
 
 ## Mục Tiêu
 
-Sau khi hoàn thành bài cá nhân, nhóm ngồi lại để xây dựng **1 trong 2 sản phẩm**:
+Nhóm chọn hướng **RAG Evaluation Pipeline** để đánh giá hệ thống RAG trả lời câu hỏi về:
 
----
+- Pháp luật Việt Nam liên quan đến ma túy và chất cấm.
+- Tin tức về nghệ sĩ Việt Nam liên quan đến ma túy.
 
-## Yêu cầu 1:  Sản phẩm nhóm RAG Chatbot
+Pipeline cá nhân từ Task 1-10 được tích hợp làm hệ thống RAG nền:
 
-Xây dựng chatbot trả lời câu hỏi về pháp luật ma tuý và tin tức liên quan.
-
-**Yêu cầu:**
-- Giao diện chat (Streamlit / Gradio / Chainlit)
-- Trả lời có citation (dựa trên Task 10)
-- Hỗ trợ follow-up questions (conversation memory)
-- Hiển thị source documents đã dùng
-
-**Stack gợi ý:**
+```text
+data/landing
+  -> data/standardized
+  -> Task 4 chunking + local index
+  -> Task 5 semantic search
+  -> Task 6 lexical BM25
+  -> Task 7 reranking
+  -> Task 8 PageIndex fallback
+  -> Task 9 retrieval pipeline
+  -> Task 10 generation with citation
+  -> group_project/evaluation
 ```
-Chainlit/Streamlit → Retrieval (Task 9) → Generation (Task 10) → Display
-```
-
----
-
-## Yêu cầu 2: RAG Evaluation Pipeline
-
-Sử dụng **1 trong 3 framework** sau để evaluate pipeline RAG của nhóm:
-
-### Framework lựa chọn
-
-| Framework | Cài đặt | Đặc điểm |
-|-----------|---------|-----------|
-| [DeepEval](https://github.com/confident-ai/deepeval) | `pip install deepeval` | Nhiều metric built-in, dễ integrate với pytest |
-| [RAGAS](https://github.com/explodinggradients/ragas) | `pip install ragas` | Chuẩn industry cho RAG eval, 3 trục chính |
-| [TruLens](https://github.com/truera/trulens) | `pip install trulens` | Dashboard UI, feedback functions mạnh |
-
-### Yêu cầu Evaluation
-
-1. **Tạo Golden Dataset** — tối thiểu 15 cặp Q&A (question, expected_answer, expected_context)
-2. **Chạy evaluation** trên toàn bộ golden dataset với các metrics sau:
-   - **Faithfulness** — câu trả lời có bám đúng context không?
-   - **Answer Relevance** — câu trả lời có đúng câu hỏi không?
-   - **Context Recall** — retriever có lấy đủ evidence không?
-   - **Context Precision** — trong context lấy về, bao nhiêu % thực sự hữu ích?
-3. **So sánh A/B** — chạy eval trên ít nhất 2 config khác nhau (ví dụ: có reranking vs không reranking, hoặc hybrid vs dense-only)
-4. **Báo cáo** — bảng điểm + phân tích worst performers + đề xuất cải tiến
-
-### Code mẫu — DeepEval
-
-```python
-from deepeval import evaluate
-from deepeval.metrics import (
-    FaithfulnessMetric,
-    AnswerRelevancyMetric,
-    ContextualRecallMetric,
-    ContextualPrecisionMetric,
-)
-from deepeval.test_case import LLMTestCase
-
-# Tạo test cases từ golden dataset
-test_cases = []
-for item in golden_dataset:
-    result = rag_pipeline.generate_with_citation(item["question"])
-    test_case = LLMTestCase(
-        input=item["question"],
-        actual_output=result["answer"],
-        expected_output=item["expected_answer"],
-        retrieval_context=[c["content"] for c in result["sources"]],
-    )
-    test_cases.append(test_case)
-
-# Chạy evaluation
-metrics = [
-    FaithfulnessMetric(threshold=0.7),
-    AnswerRelevancyMetric(threshold=0.7),
-    ContextualRecallMetric(threshold=0.7),
-    ContextualPrecisionMetric(threshold=0.7),
-]
-
-results = evaluate(test_cases, metrics)
-```
-
-### Code mẫu — RAGAS
-
-```python
-from ragas import evaluate
-from ragas.metrics import (
-    faithfulness,
-    answer_relevancy,
-    context_recall,
-    context_precision,
-)
-from datasets import Dataset
-
-# Chuẩn bị data
-eval_data = {
-    "question": [],
-    "answer": [],
-    "contexts": [],
-    "ground_truth": [],
-}
-
-for item in golden_dataset:
-    result = rag_pipeline.generate_with_citation(item["question"])
-    eval_data["question"].append(item["question"])
-    eval_data["answer"].append(result["answer"])
-    eval_data["contexts"].append([c["content"] for c in result["sources"]])
-    eval_data["ground_truth"].append(item["expected_answer"])
-
-dataset = Dataset.from_dict(eval_data)
-
-# Chạy evaluation
-result = evaluate(
-    dataset,
-    metrics=[faithfulness, answer_relevancy, context_recall, context_precision],
-)
-print(result.to_pandas())
-```
-
-### Code mẫu — TruLens
-
-```python
-from trulens.apps.custom import TruCustomApp, instrument
-from trulens.core import Feedback
-from trulens.providers.openai import OpenAI as TruOpenAI
-
-provider = TruOpenAI()
-
-# Define feedback functions
-f_faithfulness = Feedback(provider.groundedness_measure_with_cot_reasons).on_output()
-f_relevance = Feedback(provider.relevance).on_input_output()
-f_context_relevance = Feedback(provider.context_relevance).on_input()
-
-# Wrap RAG pipeline
-tru_rag = TruCustomApp(
-    rag_pipeline,
-    app_name="DrugLaw_RAG",
-    feedbacks=[f_faithfulness, f_relevance, f_context_relevance],
-)
-
-# Run evaluation
-with tru_rag as recording:
-    for item in golden_dataset:
-        rag_pipeline.generate_with_citation(item["question"])
-
-# View dashboard
-from trulens.dashboard import run_dashboard
-run_dashboard()
-```
-
-### Deliverable Evaluation
-
-- [ ] File `group_project/evaluation/golden_dataset.json` — 15+ cặp Q&A
-- [ ] File `group_project/evaluation/eval_pipeline.py` — script chạy evaluation
-- [ ] File `group_project/evaluation/results.md` — bảng điểm + phân tích
-- [ ] So sánh A/B ít nhất 2 configs
-
----
-
-## Yêu Cầu Chung
-
-1. **Tích hợp pipeline** từ bài cá nhân của các thành viên
-2. **Demo hoạt động được** trong buổi trình bày (chạy local hoặc deploy)
-3. **Evaluation pipeline** chạy được và có báo cáo kết quả
-4. **Code push lên repository** chung của nhóm
-5. **README** mô tả kiến trúc và phân công (điền bên dưới)
-
----
 
 ## Kiến Trúc Hệ Thống
 
-```
-[Vẽ diagram kiến trúc ở đây]
+```text
+User Question
+  |
+  v
+Task 9 Retrieval Pipeline
+  |-- Semantic Search
+  |-- Lexical Search / BM25
+  |-- RRF Merge
+  |-- Reranking
+  |-- PageIndex fallback
+  v
+Task 10 Generation with Citation
+  |
+  v
+Evaluation Pipeline
+  |-- Golden Dataset
+  |-- Local Metrics
+  |-- DeepEval Metrics
+  |-- A/B Comparison
+  v
+results.md
 ```
 
----
+## Deliverables
+
+| File | Mô tả | Trạng thái |
+|------|------|------------|
+| `group_project/evaluation/golden_dataset.json` | 15 cặp Q&A gồm question, expected_answer, expected_context | Done |
+| `group_project/evaluation/eval_pipeline.py` | Script chạy evaluation local và DeepEval | Done |
+| `group_project/evaluation/results.md` | Báo cáo điểm, A/B comparison, worst performers, recommendations | Done |
+| `group_project/evaluation/deepeval_results.json` | Raw output khi chạy DeepEval | Sinh tự động |
+
+## Golden Dataset
+
+Dataset có 15 câu hỏi, chia thành 3 nhóm:
+
+- Legal: câu hỏi về Luật Phòng, chống ma túy 2021 và các nghị định liên quan.
+- News: câu hỏi về Hữu Tín, Nhikolai Đinh, Chi Dân, An Tây, Nguyễn Công Trí và các bài báo đã crawl.
+- Hybrid: câu hỏi kiểm tra khả năng kết hợp legal/news và citation metadata.
+
+## Metrics
+
+Script hỗ trợ 4 metrics theo yêu cầu:
+
+| Metric | Ý nghĩa |
+|--------|---------|
+| Faithfulness | Câu trả lời có bám vào retrieved context và có citation không |
+| Answer Relevance | Câu trả lời có liên quan tới question và expected answer không |
+| Context Recall | Retrieved context có bao phủ expected answer/context không |
+| Context Precision | Tỷ lệ chunks hữu ích trong context truy xuất |
+
+## A/B Comparison
+
+Script so sánh 2 cấu hình:
+
+| Config | Mô tả |
+|--------|------|
+| Config A | Hybrid retrieval + RRF merge + reranking + generation |
+| Config B | Hybrid retrieval + RRF merge, bỏ reranking |
+
+Mục tiêu là đo tác động của reranking trong pipeline.
+
+## Hướng Dẫn Chạy
+
+Cài dependencies:
+
+```powershell
+.venv\Scripts\python.exe -m pip install -r requirements.txt
+```
+
+Chạy local evaluation:
+
+```powershell
+.venv\Scripts\python.exe group_project\evaluation\eval_pipeline.py
+```
+
+Chạy DeepEval:
+
+```powershell
+.venv\Scripts\python.exe group_project\evaluation\eval_pipeline.py --framework deepeval
+```
+
+Chạy thử DeepEval trên 1 case:
+
+```powershell
+.venv\Scripts\python.exe group_project\evaluation\eval_pipeline.py --framework deepeval --limit 1
+```
+
+Chạy cả local và DeepEval:
+
+```powershell
+.venv\Scripts\python.exe group_project\evaluation\eval_pipeline.py --framework both
+```
+
+## Lưu Ý DeepEval
+
+DeepEval thường dùng LLM judge, nên cần cấu hình provider/API key phù hợp trong `.env`. Nhóm dùng OpenRouter làm judge mặc định cho DeepEval vì hỗ trợ OpenAI-compatible API và có nhiều model `:free`.
+
+Khuyến nghị:
+
+```env
+DEEPEVAL_PROVIDER=openrouter
+OPENROUTER_API_KEY=sk-or-v1-xxx
+OPENROUTER_BASE_URL=https://openrouter.ai/api/v1
+OPENROUTER_MODEL=meta-llama/llama-3.3-70b-instruct:free
+```
+
+`meta-llama/llama-3.3-70b-instruct:free` được chọn vì là model lớn, multilingual tốt, phù hợp làm LLM judge cho câu hỏi tiếng Việt. Không dùng `openrouter/free` cho evaluation chính vì router random có thể làm kết quả không ổn định giữa các lần chạy.
+
+Nếu LLM judge thiếu quota hoặc lỗi provider, script vẫn ghi lỗi vào `deepeval_results.json` và giữ báo cáo local trong `results.md`.
 
 ## Phân Công Công Việc
 
 | Thành viên | MSSV | Nhiệm vụ | Trạng thái |
 |-----------|------|----------|------------|
-| | | | |
-| | | | |
-| | | | |
-| | | | |
+| Hoàng Hải Đăng | N/A | Tích hợp Task 1-10, tạo local RAG pipeline | Done |
+| Hoàng Hải Đăng | N/A | Xây dựng golden dataset 15 Q&A | Done |
+| Hoàng Hải Đăng | N/A | Viết evaluation pipeline local + DeepEval | Done |
+| Hoàng Hải Đăng | N/A | Viết báo cáo kết quả và hướng chạy | Done |
 
----
+## Kết Quả Hiện Tại
 
-## Hướng Dẫn Chạy
+Local evaluation đã chạy được và sinh `results.md`. Kết quả gần nhất:
 
-```bash
-# Cài đặt dependencies
-pip install -r requirements.txt
-
-# Chạy app
-streamlit run app.py
-# hoặc
-chainlit run app.py
+```text
+Loaded 15 test cases
+Config A average: 0.769
+Config B average: 0.822
 ```
 
----
-
-## Lưu ý: Hãy giữ lại repo này nếu như bạn học track 3 giai đoạn 2, chúng ta sẽ phát triển tiếp dự án lên knowledge graph để khắc phục các câu hỏi hóc búa khi có các câu hỏi khó.
+Điểm còn hạn chế chính: một số PDF pháp luật hiện được convert bằng metadata fallback, nên câu hỏi pháp luật chi tiết sẽ cải thiện rõ nếu cài MarkItDown và extract full text từ PDF.
