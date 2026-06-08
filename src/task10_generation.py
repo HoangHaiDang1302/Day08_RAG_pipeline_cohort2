@@ -37,7 +37,9 @@ Use only the provided context.
 Every factual claim must include a source citation.
 If the context is insufficient, say: I cannot verify this information."""
 
-DEFAULT_LLM_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
+DEFAULT_LLM_PROVIDER = os.getenv("LLM_PROVIDER", "groq").lower()
+DEFAULT_LLM_MODEL = os.getenv("GROQ_MODEL") or os.getenv("OPENAI_MODEL") or "llama-3.3-70b-versatile"
+GROQ_BASE_URL = os.getenv("GROQ_BASE_URL", "https://api.groq.com/openai/v1")
 
 
 def reorder_for_llm(chunks: list[dict]) -> list[dict]:
@@ -124,16 +126,24 @@ def _build_local_answer(query: str, chunks: list[dict]) -> str:
     return "\n".join(answer_lines)
 
 
-def _generate_with_openai(query: str, context: str) -> tuple[str | None, str | None]:
+def _generate_with_openai_compatible(query: str, context: str) -> tuple[str | None, str | None]:
     """
     Call an LLM for true abstractive generation when OPENAI_API_KEY is available.
 
     Returns (answer, error). Answer is None when SDK/key/network/quota is
     unavailable so callers can use the local extractive fallback.
     """
-    api_key = os.getenv("OPENAI_API_KEY")
+    if DEFAULT_LLM_PROVIDER == "groq":
+        api_key = os.getenv("GROQ_API_KEY")
+        base_url = GROQ_BASE_URL
+        missing_key_message = "GROQ_API_KEY is missing"
+    else:
+        api_key = os.getenv("OPENAI_API_KEY")
+        base_url = os.getenv("OPENAI_BASE_URL")
+        missing_key_message = "OPENAI_API_KEY is missing"
+
     if not api_key:
-        return None, "OPENAI_API_KEY is missing"
+        return None, missing_key_message
 
     try:
         from openai import OpenAI
@@ -153,6 +163,8 @@ context does not contain enough evidence, say: I cannot verify this information.
 
     try:
         client = OpenAI(api_key=api_key)
+        if base_url:
+            client = OpenAI(api_key=api_key, base_url=base_url)
         response = client.chat.completions.create(
             model=DEFAULT_LLM_MODEL,
             messages=[
@@ -185,7 +197,7 @@ def generate_with_citation(query: str, top_k: int = TOP_K, use_llm: bool | None 
     chunks = retrieve(query, top_k=top_k)
     reordered = reorder_for_llm(chunks)
     context = format_context(reordered)
-    llm_answer, llm_error = _generate_with_openai(query, context) if use_llm else (None, None)
+    llm_answer, llm_error = _generate_with_openai_compatible(query, context) if use_llm else (None, None)
     answer = llm_answer or _build_local_answer(query, reordered)
 
     return {
@@ -197,7 +209,8 @@ def generate_with_citation(query: str, top_k: int = TOP_K, use_llm: bool | None 
             "top_k": top_k,
             "top_p": TOP_P,
             "temperature": TEMPERATURE,
-            "mode": "openai_chat_completion" if llm_answer else "local_extractive_fallback",
+            "mode": f"{DEFAULT_LLM_PROVIDER}_chat_completion" if llm_answer else "local_extractive_fallback",
+            "provider": DEFAULT_LLM_PROVIDER if llm_answer else None,
             "model": DEFAULT_LLM_MODEL if llm_answer else None,
             "llm_error": llm_error,
         },
